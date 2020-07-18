@@ -1,5 +1,9 @@
 const mysql = require("mysql");
-const { promisify } = require("util");
+const {
+  promisify
+} = require("util");
+const _ = require("lodash");
+
 class MySqlDB {
   constructor(table = "", fields = [" * "], groupBy = "", orderby = "") {
     this.connect = false;
@@ -24,8 +28,7 @@ class MySqlDB {
           console.log(`Mysql DB ${__this.dbConfig.database} Connected!`);
           try {
             if (__this.enableSession) await __this.sessionStart()
-          }
-          catch (err) {
+          } catch (err) {
             return reject(err)
           }
           return resolve(__this.connect);
@@ -42,7 +45,7 @@ class MySqlDB {
       try {
         __this.dbConfig.connectionLimit = 100;
         __this.connectPool = mysql.createPool(__this.dbConfig);
-        __this.connectPool.on("enqueue", function() {
+        __this.connectPool.on("enqueue", function () {
           console.log("MySql Pool Waiting for available connection slot");
         });
         __this.connectPool.on("release", function (connection) {
@@ -51,8 +54,7 @@ class MySqlDB {
           console.log(`MySql Pool connected after release: ${--__this.connectionPoolCount}`);
         });
         return resolve(__this.connectPool);
-      }
-      catch (err) {
+      } catch (err) {
         return reject(err)
       }
     });
@@ -82,12 +84,11 @@ class MySqlDB {
         const beginTransaction = promisify(this.connect.beginTransaction).bind(this.connect);
         try {
           await beginTransaction();
-        }
-        catch (err) {
+        } catch (err) {
           throw new Error(err.message);
         }
       }
-      else 
+      else
         throw new Error("enable session");
     }
     else
@@ -102,24 +103,22 @@ class MySqlDB {
           await commit();
           if (this.connectPool)
             this.connect.release()
-        }
-        catch (err) {
+        } catch (err) {
           try {
             await this.sessionRollback();
             if (this.connectPool)
               this.connect.release()
             throw new Error(err.message);
-          }
-          catch (err) {
+          } catch (err) {
             throw new Error(err.message);
           }
         }
       }
-      else 
+      else
         throw new Error("enable session");
     }
     else
-      throw new Error("enable session");
+      throw new Error("enable connect session");
   }
   async sessionRollback() {
     console.log("********************* sessionRollback *********************");
@@ -128,11 +127,11 @@ class MySqlDB {
         const rollback = promisify(this.connect.rollback).bind(this.connect);
         return rollback();
       }
-      else 
+      else
         throw new Error("enable session");
     }
     else
-      throw new Error("enable session");
+      throw new Error("enable connect session");
   }
   async checkTableExist() {
     if (typeof this.table != "string" || this.table.length < 1)
@@ -190,7 +189,7 @@ class MySqlDB {
     let where = "";
     if (condition.length > 0) where = " WHERE " + condition.join(" AND ");
     try {
-      return `SELECT COUNT(*) AS total FROM ${this.table} ${where} ${this.groupBy} `;
+      return `SELECT COUNT(*) AS total FROM ${this.dbConfig.database}.${this.table} ${where} ${this.groupBy} `;
     } catch (e) {
       console.log("query exception", e);
       return new Promise((rs, rj) => rj(e));
@@ -205,7 +204,7 @@ class MySqlDB {
       let extra = "";
       if (!isNaN(limit)) extra = " LIMIT " + limit;
       if (!isNaN(offset)) extra += " OFFSET " + offset;
-      return `SELECT ${this.fields} FROM ${this.table} ${where} ${this.groupBy} ${this.orderby} ${extra}`;
+      return `SELECT ${this.fields} FROM ${this.dbConfig.database}.${this.table} ${where} ${this.groupBy} ${this.orderby} ${extra}`;
     } catch (e) {
       console.log("query exception", e);
       return new Promise((rs, rj) => rj(e));
@@ -218,7 +217,7 @@ class MySqlDB {
     if (condition.length > 0) where = " WHERE " + condition.join(" AND ");
     try {
       let count = await this.executeQuery(
-        `SELECT COUNT(*) AS total FROM ${this.table} ${where} ${this.groupBy} `
+        `SELECT COUNT(*) AS total FROM ${this.dbConfig.database}.${this.table} ${where} ${this.groupBy} `
       );
       // console.log('count ======>', count)
       if (Array.isArray(count) && count.length > 0)
@@ -237,7 +236,7 @@ class MySqlDB {
     if (condition.length > 0) where = " WHERE " + condition.join(" AND ");
     try {
       return await this.executeQuery(
-        `SELECT ${this.fields} FROM ${this.table} ${where} ${this.groupBy} ${this.orderby}`,
+        `SELECT ${this.fields} FROM ${this.dbConfig.database}.${this.table} ${where} ${this.groupBy} ${this.orderby}`,
         limit,
         offset
       );
@@ -254,7 +253,7 @@ class MySqlDB {
     this.operation = "write";
     try {
       return await this.executeQuery(
-        `INSERT INTO ${this.table} (${this.fields}) VALUES ${rows.join(", ")}`
+        `INSERT INTO ${this.dbConfig.database}.${this.table} (${this.fields}) VALUES (${rows.join(", ")})`
       );
     } catch (e) {
       throw new Error(e);
@@ -270,7 +269,7 @@ class MySqlDB {
     this.operation = "write";
     try {
       return await this.executeQuery(
-        `UPDATE ${this.table} SET ${set.join(", ")} ${where}`
+        `UPDATE ${this.dbConfig.database}.${this.table} SET ${set.join(", ")} ${where}`
       );
     } catch (e) {
       throw new Error(e);
@@ -283,41 +282,49 @@ class MySqlDB {
       let extra = "";
       if (!isNaN(limit)) extra = " LIMIT " + limit;
       if (!isNaN(offset)) extra += " OFFSET " + offset;
-      console.log(query + extra, __this.enableSession);
+      console.log(`${__this.constructor.name} Query ===>`, query + extra);
       if (!__this.connectPool) {
+        let sessionExists = true
         try {
-          await __this.createConnection();
+          if (!__this.connect) await __this.createConnection();
+          else {
+            if (__this.connect && __this.connect.state && __this.connect.state === 'disconnected') {
+              __this.connect = null
+              await __this.createConnection();
+            }
+            sessionExists = false
+          }
+        } catch (ex) {
+          console.error(`${__this.constructor.name} Exception`, ex);
+          return reject(ex)
         }
-        catch (err) {
-          return reject(err)
-        }
-        if (!__this.connect) return reject(`Mysql connection pool/connect didn't establish`);
+        if (!__this.connect) return reject(`${__this.constructor.name} connection pool/connect didn't establish`);
         try {
-          __this.connect.query(query + extra, [], function (err, rows, columns) {
-            if (!__this.enableSession)
-              __this.closeConnection();
+          if (__this.enableSession && !sessionExists) await __this.sessionStart()
+          __this.connect.query(query + extra, [], async function (err, rows, columns) {
             try {
               if (err) {
                 console.log(err);
                 return reject(err);
               }
+              if (!__this.enableSession) {
+                console.log(`${__this.constructor.name} single connection close called`)
+                await __this.closeConnection();
+              }
               return resolve(rows);
             } catch (ex) {
-              console.error("MySQL Exception (query)", ex);
+              console.error(`${__this.constructor.name} Exception`, ex);
               return reject(ex);
             }
           });
         } catch (ex) {
-          console.error("MySQL Exception (query)", ex);
+          console.error(`${__this.constructor.name} Exception`, ex);
           return reject(ex);
         }
-      }
-      else {
+      } else {
         try {
           let sessionExists = false
-          if (!__this.connect) {
-            __this.connect = await __this.getConnectionFromPool()
-          }
+          if (!__this.connect) __this.connect = await __this.getConnectionFromPool()
           else sessionExists = true
           try {
             if (__this.enableSession && !sessionExists) await __this.sessionStart()
@@ -332,51 +339,71 @@ class MySqlDB {
                   }
                   return resolve(rows);
                 } catch (ex) {
-                  console.error("MySQL Pool Exception (query)", ex);
+                  console.error(`${__this.constructor.name} Pool Exception`, ex);
                   return reject(ex);
                 }
               });
-            }
-            else
+            } else
               reject('pool closed')
           } catch (ex) {
-            console.error("MySQL Pool Exception (query)", ex);
+            console.error(`${__this.constructor.name} Pool Exception`, ex);
             return reject(ex);
           }
         } catch (ex) {
-          console.error("MySQL Pool Exception (query)", ex);
+          console.error(`${__this.constructor.name} Pool Exception`, ex);
           return reject(ex);
         }
       }
     });
   }
-  async closePool() {
-    if (!this.connectPool)
+  async closeConnection() {
+    if (this.connectPool) {
+      try {
+        await this.connectPool.end()
+        console.log(`${this.constructor.name} connection pool closed`)
+      } catch (Ex) {
+        console.error(Ex);
+      }
+      this.connectPool = null;
+      return true
+    }
+    else if (this.connect) {
+      try {
+        await this.connect.end()
+        console.log(`${this.constructor.name} connection closed`)
+      } catch (Ex) {
+        if (this.connect) await this.connect.destroy();
+        console.error(Ex);
+      }
+      this.connect = null;
+      return true
+    }
+    else {
       return false
-    let __this = this
-    try {
-      this.connectPool.end(function(err) {
-        if (err) console.error(new Error(err));
-        __this.connectPool = false;
-        console.log("********************* closePool *********************");
-      });
-    } catch (Ex) {
-      console.error(Ex);
     }
   }
-  async closeConnection() {
-    if (!this.connect)
-      return false
-    let __this = this;
-    try {
-      this.connect.end(function(err) {
-        if (err) console.error(new Error(err));
-        __this.connect = false;
-        console.info("MySQL connection closed");
-      });
-    } catch (Ex) {
-      console.error(Ex);
+  async makeRowsAndValues(rowObject, tableObject) {
+    let columnName = [], columnValues = []
+    for (let row in rowObject) {
+      // console.log('makeRowsAndValues ==>', row, rowObject[row], tableObject[row])
+      if (tableObject[row]) {
+        if ('string' == tableObject[row]) {
+          columnName.push(row)
+          columnValues.push(`'${String(rowObject[row])}'`)
+        }
+        else if ('number' == tableObject[row]) {
+          columnName.push(row)
+          columnValues.push(`${Number(rowObject[row])}`)
+        }
+        else if ('boolean' == tableObject[row]) {
+          columnName.push(row)
+          columnValues.push(`${rowObject[row]}`)
+        }
+        else return false
+      }
     }
+    if (columnName.length && columnValues.length) return { columnName, columnValues }
+    else return false
   }
 }
 module.exports = MySqlDB
